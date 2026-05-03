@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GALAXY SHOOTER: EVOLUTION MAX</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+        body { margin: 0; background: #000; overflow: hidden; touch-action: none; font-family: 'Orbitron', sans-serif; }
+        canvas { display: block; }
+
+        #hud { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; color: white; }
+        .top-stats { display: flex; justify-content: space-between; padding: 15px; background: rgba(0, 210, 255, 0.15); border-bottom: 2px solid #00d2ff; }
+        .dist-txt { font-size: 22px; color: #39ff14; font-weight: 900; text-shadow: 0 0 10px #39ff14; }
+        
+        #boss-panel { display: none; position: absolute; top: 85px; left: 50%; transform: translateX(-50%); width: 85%; text-align: center; }
+        .hp-outer { width: 100%; height: 14px; background: rgba(255,0,0,0.2); border: 2px solid #fff; border-radius: 7px; overflow: hidden; margin-top: 5px; }
+        #hp-inner { width: 100%; height: 100%; background: linear-gradient(90deg, #ff0000, #ff8c00); transition: width 0.2s; }
+
+        .evo-alert { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); font-size: 30px; font-weight: 900; color: #00d2ff; display: none; text-shadow: 0 0 20px #00d2ff; text-align: center; }
+        .game-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.95); z-index: 100; pointer-events: all; }
+        .btn { padding: 15px 45px; background: #00d2ff; color: #000; font-weight: 900; border: none; border-radius: 50px; cursor: pointer; margin-top: 20px; box-shadow: 0 0 20px #00d2ff; font-size: 18px; }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="top-stats">
+            <div>DISTANCE: <span id="dist" class="dist-txt">0</span>m</div>
+            <div style="text-align: right;">
+                <div id="p-rank" style="color: #00d2ff; font-size: 14px; font-weight: 900;">LEVEL 1: SCOUT</div>
+                <div id="p-shield" style="color: #ff3e3e; font-size: 11px; font-weight: 900;">SHIELD: 100%</div>
+            </div>
+        </div>
+        <div id="boss-panel">
+            <div id="boss-name" style="color: #ff3e3e; font-size: 12px; font-weight: 900;">BOSS LEVEL 1</div>
+            <div class="hp-outer"><div id="hp-inner"></div></div>
+        </div>
+    </div>
+
+    <div id="evo-msg" class="evo-alert">WARSHIP EVOLVED!</div>
+
+    <div id="game-over" class="game-screen">
+        <h1 style="color: red; font-size: 45px; margin: 0;">MISSION FAILED</h1>
+        <p style="color: #ccc;">TOTAL DISTANCE: <span id="final-dist">0</span>m</p>
+        <button class="btn" onclick="location.reload()">RE-DEPLOY PILOT</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Assets Loading (P1-P6 and B1-B6)
+        const pImgs = [];
+        const bImgs = [];
+        for(let i=1; i<=6; i++) {
+            const p = new Image(); p.src = `p${i}.png`; pImgs.push(p);
+            const b = new Image(); b.src = `b${i}.png`; bImgs.push(b);
+        }
+        const imgE = new Image(); imgE.src = 'enemy.png';
+
+        let distance = 0, frame = 0, gameActive = true, shake = 0;
+        let pLvl = 1, bLvl = 1, pHP = 100;
+
+        const player = { x: canvas.width/2, y: canvas.height-120, tx: canvas.width/2, ty: canvas.height-120, w: 70, h: 80 };
+        let bullets = [], enemies = [], eBullets = [], stars = [], boss = null;
+
+        // Space Background stars
+        for(let i=0; i<100; i++) stars.push({x: Math.random()*canvas.width, y: Math.random()*canvas.height, s: Math.random()*2.5, v: Math.random()*3+2});
+
+        function notify(txt) {
+            const m = document.getElementById('evo-msg'); m.innerHTML = txt;
+            m.style.display = 'block'; setTimeout(() => m.style.display = 'none', 2500);
+        }
+
+        function spawnBoss() {
+            if(bLvl > 6) return;
+            document.getElementById('boss-panel').style.display = 'block';
+            document.getElementById('boss-name').innerText = `GALAXY TYRANT (BOSS LVL ${bLvl})`;
+            notify(`WARNING: BOSS LVL ${bLvl}<br>INBOUND!`);
+            boss = { 
+                x: canvas.width/2, y: -250, w: 220 + (bLvl*35), h: 140 + (bLvl*25), 
+                hp: 200 * bLvl, maxHp: 200 * bLvl, dir: 1, active: true
+            };
+        }
+
+        function update() {
+            if(!gameActive) return;
+            frame++;
+            if(shake > 0) shake--;
+
+            // Score Logic: Distance (1m per 4 frames)
+            if(frame % 4 === 0) distance++;
+            document.getElementById('dist').innerText = distance;
+
+            // PLAYER EVOLUTION (Every 1000m)
+            let currentLvl = Math.min(6, Math.floor(distance / 1000) + 1);
+            if(currentLvl > pLvl) {
+                pLvl = currentLvl;
+                pHP = 100; // Heal on evolution
+                player.w += 12; player.h += 12;
+                notify(`WARSHIP EVOLVED<br>LEVEL ${pLvl}`);
+                document.getElementById('p-rank').innerText = `LEVEL ${pLvl}: ELITE`;
+                shake = 20;
+            }
+
+            // BOSS SPAWN (Every 2000m)
+            if(distance > 0 && distance % 2000 === 0 && !boss && bLvl <= 6) {
+                spawnBoss();
+            }
+
+            // Background movement
+            stars.forEach(s => { s.y += s.v; if(s.y > canvas.height) { s.y = -20; s.x = Math.random()*canvas.width; } });
+            player.x += (player.tx - player.x) * 0.15;
+            player.y += (player.ty - player.y) * 0.15;
+
+            // Player Shooting (Power scales with Level)
+            if(frame % (11 - pLvl) === 0) {
+                bullets.push({x: player.x, y: player.y - 40, vx: 0, vy: -18, dmg: 1 + (pLvl*0.6)});
+                if(pLvl >= 2) { bullets.push({x: player.x-25, y: player.y, vx: -1.5, vy: -16, dmg: 1}); bullets.push({x: player.x+25, y: player.y, vx: 1.5, vy: -16, dmg: 1}); }
+                if(pLvl >= 4) { bullets.push({x: player.x-45, y: player.y+20, vx: -3, vy: -14, dmg: 1.5}); bullets.push({x: player.x+45, y: player.y+20, vx: 3, vy: -14, dmg: 1.5}); }
+                if(pLvl >= 6) { bullets.push({x: player.x, y: player.y - 60, vx: 0, vy: -25, dmg: 12, gold: true}); }
+            }
+
+            bullets.forEach((b, i) => {
+                b.x += b.vx || 0; b.y += b.vy;
+                if(b.y < 0) bullets.splice(i, 1);
+                
+                enemies.forEach((e, ei) => {
+                    if(Math.hypot(b.x - e.x, b.y - e.y) < 35) {
+                        e.hp -= b.dmg; bullets.splice(i, 1);
+                        if(e.hp <= 0) enemies.splice(ei, 1);
+                    }
+                });
+
+                if(boss && b.x > boss.x - boss.w/2 && b.x < boss.x + boss.w/2 && b.y < boss.y + 100) {
+                    boss.hp -= b.dmg; bullets.splice(i, 1);
+                    document.getElementById('hp-inner').style.width = (boss.hp/boss.maxHp*100)+'%';
+                    if(boss.hp <= 0) {
+                        boss = null; bLvl++;
+                        document.getElementById('boss-panel').style.display = 'none';
+                        notify("BOSS ANNIHILATED!");
+                    }
+                }
+            });
+
+            // Enemies
+            if(frame % 35 === 0 && !boss) {
+                enemies.push({ x: Math.random()*canvas.width, y: -60, hp: 2 + (pLvl*2), speed: 3 + Math.random()*3 });
+            }
+
+            enemies.forEach((e, i) => {
+                e.y += e.speed;
+                if(e.y > canvas.height) enemies.splice(i, 1);
+                if(Math.hypot(e.x - player.x, e.y - player.y) < 45) { enemies.splice(i, 1); hit(20); }
+            });
+
+            // Boss AI
+            if(boss) {
+                if(boss.y < 120) boss.y += 2.5;
+                boss.x += boss.dir * (3 + bLvl);
+                if(boss.x > canvas.width - 120 || boss.x < 120) boss.dir *= -1;
+                if(Math.random() < 0.06 + (bLvl*0.02)) {
+                    eBullets.push({x: boss.x + (Math.random()-0.5)*100, y: boss.y + 60, vx: (Math.random()-0.5)*12, vy: 6 + bLvl});
+                }
+            }
+
+            eBullets.forEach((eb, i) => {
+                eb.x += eb.vx; eb.y += eb.vy;
+                if(eb.y > canvas.height) eBullets.splice(i, 1);
+                if(Math.hypot(eb.x - player.x, eb.y - player.y) < 32) { eBullets.splice(i, 1); hit(15); }
+            });
+
+            document.getElementById('p-shield').innerText = `SHIELD: ${pHP}%`;
+        }
+
+        function hit(amt) {
+            pHP -= amt; shake = 15;
+            if(pHP <= 0) endGame();
+        }
+
+        function draw() {
+            ctx.save();
+            if(shake > 0) ctx.translate(Math.random()*shake, Math.random()*shake);
+            ctx.fillStyle = '#000814'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Stars
+            ctx.fillStyle = '#fff'; stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
+
+            // Player ship
+            const curP = pImgs[pLvl-1];
+            if(curP.complete) ctx.drawImage(curP, player.x-player.w/2, player.y-player.h/2, player.w, player.h);
+
+            // Boss ship
+            if(boss) {
+                const curB = bImgs[bLvl-1];
+                if(curB.complete) ctx.drawImage(curB, boss.x-boss.w/2, boss.y, boss.w, boss.h);
+            }
+
+            // Bullets
+            bullets.forEach(b => {
+                ctx.fillStyle = b.gold ? "#ffd700" : "#00ffff";
+                ctx.fillRect(b.x-2, b.y, b.gold ? 6 : 4, 25);
+            });
+
+            // Enemy & Bullets
+            ctx.fillStyle = '#ff3e3e';
+            eBullets.forEach(eb => { ctx.beginPath(); ctx.arc(eb.x, eb.y, 7, 0, Math.PI*2); ctx.fill(); });
+            enemies.forEach(e => { if(imgE.complete) ctx.drawImage(imgE, e.x-25, e.y-25, 50, 50); });
+            
+            ctx.restore();
+        }
+
+        function endGame() {
+            gameActive = false;
+            document.getElementById('game-over').style.display = 'flex';
+            document.getElementById('final-dist').innerText = distance;
+        }
+
+        window.addEventListener('touchmove', (e) => {
+            if(!gameActive) return;
+            player.tx = e.touches[0].clientX;
+            player.ty = e.touches[0].clientY - 60;
+        }, {passive: false});
+
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
+        loop();
+    </script>
+</body>
+</html>
